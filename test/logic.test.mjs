@@ -7,6 +7,52 @@ test('straight finger is about 180 degrees, folded is small', () => {
   assert.ok(L.jointAngle({ x: 0, y: 0 }, { x: 0, y: 1 }, { x: 0.1, y: 0.1 }) < 10);
 });
 
+// a hand whose four fingers bend by the given middle-joint angles, thumb tip at the given distance from the palm
+function handWith(angles, thumbReach) {
+  const hand = Array.from({ length: 21 }, () => ({ x: 0, y: 0, z: 0 }));
+  hand[9] = { x: 0, y: 1, z: 0 };
+  hand[4] = { x: -thumbReach, y: 1, z: 0 };
+  [5, 9, 13, 17].forEach((k, i) => {
+    const a = angles[i] * Math.PI / 180;
+    hand[k] = { x: i - 1, y: 1, z: 0 };
+    hand[k + 1] = { x: i - 1, y: 2, z: 0 };
+    hand[k + 3] = { x: i - 1 + Math.sin(a), y: 2 - Math.cos(a), z: 0 };
+  });
+  hand[9] = { x: 0, y: 1, z: 0 };
+  return hand;
+}
+const closed = c => c.filter(Boolean).length;
+
+test('an open hand counts as nothing curled, even when relaxed or with the thumb across the palm', () => {
+  assert.equal(closed(L.curledFingers(handWith([170, 170, 170, 170], 1))), 0);
+  assert.equal(closed(L.curledFingers(handWith([130, 135, 120, 115], 1))), 0);
+  assert.equal(closed(L.curledFingers(handWith([170, 170, 170, 170], 0.2))), 0);
+});
+
+test('curled fingers count, and the thumb joins them', () => {
+  assert.equal(closed(L.curledFingers(handWith([50, 170, 170, 170], 1))), 1);
+  assert.equal(closed(L.curledFingers(handWith([50, 170, 170, 170], 0.2))), 2);
+  assert.equal(closed(L.curledFingers(handWith([40, 40, 40, 40], 0.2))), 5);
+});
+
+test('a curled finger has to open clearly before it lets go', () => {
+  const was = [false, true, false, false, false];
+  assert.equal(L.curledFingers(handWith([115, 170, 170, 170], 1), was)[1], true);
+  assert.equal(L.curledFingers(handWith([130, 170, 170, 170], 1), was)[1], false);
+});
+
+test('open amounts run from closed to open', () => {
+  const [thumb, index] = L.openAmounts(L.curlMetrics(handWith([170, 170, 170, 170], 1)));
+  assert.equal(thumb, 1);
+  assert.equal(index, 1);
+  assert.equal(L.openAmounts(L.curlMetrics(handWith([40, 170, 170, 170], 0.2)))[1], 0);
+});
+
+test('a moving hand follows at once and a still hand is smoothed', () => {
+  assert.equal(L.followAmount(0.05), 1);
+  assert.ok(L.followAmount(0) < 0.6);
+});
+
 test('steady only accepts a value once it has held', () => {
   const s = { value: 0, pending: 0, since: 0 };
   assert.equal(L.steady(s, 3, 100, 90), 0);

@@ -1,7 +1,7 @@
 import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.mjs';
 import {
   curledFingers, curlMetrics, steady, yToPitch, snapNote, bendAmount,
-  chordNotes, noteName, midiToHz, xToCutoff, coverMap,
+  chordNotes, noteName, midiToHz, xToCutoff, coverMap, openAmounts, followAmount,
 } from './logic.js';
 
 const BONES = [
@@ -12,9 +12,9 @@ const BONES = [
   [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
 ];
 const PALM = [0, 5, 9, 13, 17];
-const LINE = '#14e0bc', JOINT = '#ff4fd8';
-const SMOOTH = 0.6;        // how much of each new tracking frame is used
-const CHANGE_MS = 90;      // a chord change has to hold this long
+const FINGER_NAMES = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+const LINE = '#30d5c8';
+const CHANGE_MS = 60;      // a chord change has to hold this long
 const LOST_MS = 250;       // a hand can vanish this long without the sound stopping
 const MATCH_DISTANCE = 0.3;
 const MAX_VOICES = 6;
@@ -22,14 +22,15 @@ const MAX_VOICES = 6;
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
 const g = canvas.getContext('2d');
-const startScreen = document.getElementById('start');
-const startButton = document.getElementById('go');
-const message = document.getElementById('message');
-const hint = document.getElementById('hint');
+const loader = document.getElementById('loader');
+const tapLabel = document.getElementById('tap');
+const valuesTab = document.getElementById('values');
+const valuesBody = document.getElementById('valuesBody');
 const debug = location.hash === '#debug';
 
 let tracker = null, audio = null, stream = null, running = false;
-let lastVideoTime = -1, heardSound = false, screenW = 0, screenH = 0, frames = 0;
+let lastVideoTime = -1, screenW = 0, screenH = 0, frames = 0;
+let engine = '', trackMs = 0, trackRate = 0, lastTrack = 0, lastValues = 0;
 const slots = [null, null];
 
 // ---- tracking ----
@@ -42,9 +43,12 @@ async function makeTracker() {
     numHands: 2,
   });
   try {
-    return await HandLandmarker.createFromOptions(files, options('GPU'));
+    const made = await HandLandmarker.createFromOptions(files, options('GPU'));
+    engine = 'GPU';
+    return made;
   } catch (err) {
     console.warn('GPU tracking failed, using CPU', err);
+    engine = 'CPU';
     return HandLandmarker.createFromOptions(files, options('CPU'));
   }
 }
@@ -100,8 +104,10 @@ function matchHands(result, now) {
 }
 
 function updateSlot(slot, landmarks, world, now) {
+  const fresh = palmCentre(landmarks);
+  const follow = slot.centre ? followAmount(Math.hypot(fresh.x - slot.centre.x, fresh.y - slot.centre.y)) : 1;
   slot.hand = landmarks.map((p, i) => slot.hand
-    ? { x: slot.hand[i].x + (p.x - slot.hand[i].x) * SMOOTH, y: slot.hand[i].y + (p.y - slot.hand[i].y) * SMOOTH }
+    ? { x: slot.hand[i].x + (p.x - slot.hand[i].x) * follow, y: slot.hand[i].y + (p.y - slot.hand[i].y) * follow }
     : { x: p.x, y: p.y });
   slot.centre = palmCentre(slot.hand);
   slot.lastSeen = now;
@@ -128,7 +134,6 @@ function updateSlot(slot, landmarks, world, now) {
       xToCutoff(slot.screen.x / screenW),
     );
   }
-  if (count > 0 && !heardSound) { heardSound = true; hint.classList.add('off'); }
 }
 
 // ---- sound ----
@@ -205,35 +210,81 @@ function drawHand(slot, map) {
   g.lineCap = 'round';
   g.lineJoin = 'round';
   g.strokeStyle = LINE;
-  g.lineWidth = 3;
+  g.lineWidth = 2;
   g.beginPath();
   BONES.forEach(([a, b]) => { g.moveTo(pts[a].x, pts[a].y); g.lineTo(pts[b].x, pts[b].y); });
   g.stroke();
-  g.fillStyle = JOINT;
-  pts.forEach(p => { g.beginPath(); g.arc(p.x, p.y, 4, 0, Math.PI * 2); g.fill(); });
+  g.fillStyle = LINE;
+  pts.forEach(p => { g.beginPath(); g.arc(p.x, p.y, 2.5, 0, Math.PI * 2); g.fill(); });
 
   if (slot.count.value > 0) {
     const top = Math.min(...pts.map(p => p.y));
-    g.font = '700 34px -apple-system, "Helvetica Neue", sans-serif';
+    g.font = '400 42px "Source Serif 4", Georgia, serif';
     g.textAlign = 'center';
     g.fillStyle = '#fff';
     g.fillText(noteName(slot.note), slot.screen.x, Math.max(44, top - 18));
   }
 }
 
+// ---- values tab ----
+
+function bar(label, amount, curled) {
+  const pct = Math.round(amount * 100);
+  return `<div class="row"><span>${label}</span><i class="${curled ? 'shut' : ''}"><b style="width:${pct}%"></b></i><span>${pct}%</span></div>`;
+}
+
+function line(label, value) {
+  return `<div class="row"><span>${label}</span><span>${value}</span></div>`;
+}
+
+function renderValues(now) {
+  if (valuesBody.hidden || now - lastValues < 120) return;
+  lastValues = now;
+  const cam = stream ? stream.getVideoTracks()[0].getSettings() : {};
+  let html = line('tracking', `${Math.round(trackRate)}/s`)
+    + line('each look', `${Math.round(trackMs)} ms`)
+    + line('runs on', engine)
+    + line('camera', `${video.videoWidth}\u00d7${video.videoHeight} ${Math.round(cam.frameRate || 0)}/s`);
+  slots.forEach((slot, s) => {
+    if (!slot || !slot.metrics) return;
+    const open = openAmounts(slot.metrics);
+    html += `<h2>hand ${s + 1}</h2>`
+      + FINGER_NAMES.map((name, i) => bar(name, open[i], slot.curled[i])).join('')
+      + line('curled', slot.count.value)
+      + line('note', slot.count.value ? noteName(slot.note) : '\u2013')
+      + line('pitch', slot.pitch.toFixed(1))
+      + line('glide', `${Math.round(slot.bend * 100)}%`)
+      + line('tone', `${Math.round(xToCutoff(slot.screen.x / screenW))} Hz`);
+  });
+  if (!slots.some(Boolean)) html += '<h2>no hands seen</h2>';
+  valuesBody.innerHTML = html;
+}
+
+function nextFrame() {
+  // the moment a camera frame arrives where the browser can say so, otherwise the next screen refresh
+  if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frame);
+  else requestAnimationFrame(frame);
+}
+
 function frame() {
   if (!running) return;
-  requestAnimationFrame(frame);
+  nextFrame();
   if (video.readyState < 2 || !video.videoWidth) return;
   const now = performance.now();
   if (video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
-    matchHands(tracker.detectForVideo(video, now), now);
+    const result = tracker.detectForVideo(video, now);
+    const done = performance.now();
+    trackMs += (done - now - trackMs) * 0.1;
+    if (lastTrack) trackRate += (1000 / Math.max(1, now - lastTrack) - trackRate) * 0.1;
+    lastTrack = now;
+    matchHands(result, now);
     frames++;
   }
   g.clearRect(0, 0, screenW, screenH);
   const map = coverMap(video.videoWidth, video.videoHeight, screenW, screenH);
   slots.forEach(slot => { if (slot) drawHand(slot, map); });
+  renderValues(now);
 }
 
 // ---- starting up ----
@@ -241,28 +292,39 @@ function frame() {
 async function openCamera() {
   stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
   });
   video.srcObject = stream;
   await video.play();
 }
 
-function showError(err) {
-  console.error(err);
-  startButton.disabled = false;
-  startButton.textContent = 'Try again';
-  message.textContent = err && err.name === 'NotAllowedError'
-    ? 'The camera is blocked. Allow it in Settings, Safari, Camera, then try again.'
-    : 'Could not start: ' + (err && err.message || err);
+function showMessage(text) {
+  tapLabel.textContent = text;
+  tapLabel.classList.add('on', 'long');
 }
 
-const trackerReady = makeTracker();
-trackerReady.catch(() => {}); // reported when Start is tapped
+function showError(err) {
+  console.error(err);
+  showMessage(err && err.name === 'NotAllowedError'
+    ? 'camera blocked, allow it in settings, safari, camera, then tap'
+    : 'could not start, tap to try again');
+  starting = false;
+}
 
-startButton.addEventListener('click', async () => {
-  startButton.disabled = true;
-  startButton.textContent = 'Starting';
-  message.textContent = '';
+let starting = false;
+const trackerReady = makeTracker();
+trackerReady.then(() => {
+  document.fonts.load('42px "Source Serif 4"').catch(() => {});
+  tapLabel.classList.add('on');
+}, err => {
+  console.error(err);
+  showMessage('could not load the hand tracking');
+});
+
+loader.addEventListener('click', async () => {
+  if (starting || !tapLabel.classList.contains('on')) return;
+  starting = true;
+  tapLabel.classList.remove('on');
   try {
     // inside the tap, or the iPhone keeps the sound off; playback also ignores the silent switch where it can
     if (navigator.audioSession) navigator.audioSession.type = 'playback';
@@ -270,13 +332,18 @@ startButton.addEventListener('click', async () => {
     await openCamera();
     tracker = await trackerReady;
     resize();
-    startScreen.classList.add('off');
-    hint.classList.remove('off');
+    loader.classList.add('off');
+    valuesTab.classList.add('on');
     running = true;
-    requestAnimationFrame(frame);
+    nextFrame();
   } catch (err) {
     showError(err);
   }
+});
+
+valuesTab.addEventListener('click', () => {
+  valuesBody.hidden = !valuesBody.hidden;
+  lastValues = 0;
 });
 
 window.addEventListener('resize', resize);

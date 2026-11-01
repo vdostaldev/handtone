@@ -13,29 +13,36 @@
 <link rel="icon" type="image/png" href="icon-512.png">
 <link rel="apple-touch-icon" href="icon-180.png">
 <style>
-  html, body { margin:0; height:100%; background:#000; overflow:hidden; overscroll-behavior:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; font-family:-apple-system,"Helvetica Neue",sans-serif; color:#fff; }
+  @font-face { font-family:"Source Serif 4"; src:url(vendor/source-serif-4.woff2) format("woff2"); font-weight:400; font-display:swap; }
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; overscroll-behavior:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; color:#fff; }
   #video { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); background:#000; }
   #overlay { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; }
-  #start { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:28px; padding:24px; box-sizing:border-box; background:#000; text-align:center; transition:opacity .4s ease; }
-  #start.off { opacity:0; pointer-events:none; }
-  h1 { margin:0; font-size:30px; font-weight:600; letter-spacing:-.01em; }
-  #go { min-width:150px; min-height:52px; padding:0 30px; border:0; border-radius:26px; background:#14e0bc; color:#04231d; font:600 17px -apple-system,"Helvetica Neue",sans-serif; }
-  #go:disabled { opacity:.55; }
-  #message { min-height:44px; max-width:300px; margin:0; color:#aaa; font-size:15px; line-height:1.45; }
-  #hint { position:fixed; left:0; right:0; bottom:calc(env(safe-area-inset-bottom) + 36px); text-align:center; pointer-events:none; transition:opacity .4s ease; }
-  #hint span { display:inline-block; padding:10px 18px; border-radius:22px; background:rgba(0,0,0,.6); font-size:15px; }
-  #hint.off { opacity:0; }
+  #loader { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#000; transition:opacity .9s ease; touch-action:none; }
+  #loader.off { opacity:0; pointer-events:none; }
+  #dot { width:7px; height:7px; border-radius:50%; background:#fff; animation:breathe 1.5s ease-in-out infinite; }
+  #tap { position:absolute; top:calc(50% + 22px); color:#777; font:300 12px/1 -apple-system,"Helvetica Neue",sans-serif; letter-spacing:.24em; text-indent:.24em; opacity:0; transition:opacity .6s ease; }
+  #tap.on { opacity:1; }
+  #tap.long { left:32px; right:32px; text-align:center; letter-spacing:.06em; text-indent:0; line-height:1.6; }
+  @keyframes breathe { 0%,100% { transform:scale(.7); opacity:.45; } 50% { transform:scale(1.5); opacity:1; } }
+  #values { position:fixed; top:calc(env(safe-area-inset-top) + 12px); right:calc(env(safe-area-inset-right) + 12px); min-width:44px; min-height:32px; padding:9px 11px; box-sizing:border-box; border-radius:10px; background:rgba(0,0,0,.55); color:#fff; font:11px/1.35 ui-monospace,Menlo,monospace; display:none; }
+  #values.on { display:block; }
+  #valuesLabel { text-align:right; color:#30d5c8; letter-spacing:.04em; }
+  #valuesBody { width:178px; margin-top:7px; }
+  #valuesBody[hidden] { display:none; }
+  #valuesBody h2 { margin:9px 0 4px; font:inherit; color:#30d5c8; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:7px; }
+  .row > span:first-child { min-width:46px; flex:none; white-space:nowrap; color:#bbb; }
+  .row > span:last-child { flex:none; text-align:right; font-variant-numeric:tabular-nums; }
+  .row > i { flex:1; height:3px; background:rgba(255,255,255,.2); }
+  .row > i > b { display:block; height:100%; background:#30d5c8; }
+  .row > i.shut > b { background:#fff; }
 </style>
 </head>
 <body>
 <video id="video" playsinline muted></video>
 <canvas id="overlay"></canvas>
-<div id="hint" class="off"><span>Hold up a hand and close it to play</span></div>
-<div id="start">
-  <h1>Handtone</h1>
-  <button id="go" type="button">Start</button>
-  <p id="message"></p>
-</div>
+<div id="values"><div id="valuesLabel">values</div><div id="valuesBody" hidden></div></div>
+<div id="loader"><div id="dot"></div><div id="tap">tap</div></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>

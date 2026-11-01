@@ -6,8 +6,8 @@ const SCALE = [0, 2, 4, 7, 9]; // pentatonic, so any two notes sound fine togeth
 const LOW = 45, HIGH = 76;     // A2 to E5
 
 // curled keeps a finger's previous state in the gap between the thresholds, so it doesn't flicker
-const CURL_ON = 125, CURL_OFF = 145;      // finger: degrees at the middle joint
-const THUMB_ON = 0.62, THUMB_OFF = 0.78;  // thumb: tip to palm centre, in palm lengths
+const CURL_ON = 105, CURL_OFF = 125;      // finger: degrees at the middle joint
+const THUMB_ON = 0.55, THUMB_OFF = 0.68;  // thumb: tip to palm centre, in palm lengths
 
 function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: (a.z || 0) - (b.z || 0) }; }
 function len(v) { return Math.hypot(v.x, v.y, v.z); }
@@ -27,9 +27,21 @@ export function curlMetrics(hand) {
 // five booleans, thumb first
 export function curledFingers(hand, prev = [false, false, false, false, false]) {
   const { angles, thumb } = curlMetrics(hand);
-  const curled = [thumb < (prev[0] ? THUMB_OFF : THUMB_ON)];
-  angles.forEach((a, i) => curled.push(a < (prev[i + 1] ? CURL_OFF : CURL_ON)));
-  return curled;
+  const fingers = angles.map((a, i) => a < (prev[i + 1] ? CURL_OFF : CURL_ON));
+  // a thumb resting across an open palm is not a closed hand, so it only counts alongside a finger
+  const thumbCurled = fingers.some(Boolean) && thumb < (prev[0] ? THUMB_OFF : THUMB_ON);
+  return [thumbCurled, ...fingers];
+}
+
+// 0 to 1 per finger, thumb first, for showing how open each one is
+export function openAmounts({ angles, thumb }) {
+  const clamp = v => Math.max(0, Math.min(1, v));
+  return [clamp((thumb - 0.35) / 0.5), ...angles.map(a => clamp((a - 60) / 110))];
+}
+
+// how much of a new tracking frame to use: steady hands are smoothed, moving hands follow at once
+export function followAmount(moved) {
+  return Math.min(1, 0.55 + moved * 25);
 }
 
 // a new value only counts once it has held for ms

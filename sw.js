@@ -1,4 +1,4 @@
-var CACHE = 'handtone-v1';
+var CACHE = 'handtone-v2';
 var FILES = ['./', 'index.html', 'app.js', 'logic.js', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png'];
 
 self.addEventListener('install', function (e) {
