@@ -5,10 +5,11 @@ const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const SCALE = [0, 2, 4, 7, 9]; // pentatonic, so any two notes sound fine together
 const LOW = 45, HIGH = 76;     // A2 to E5
 
-// curled keeps a finger's previous state in the gap between the thresholds, so it doesn't flicker
-// curled below 70% open on the values tab, and open again at 77%
-const CURL_ON = 137, CURL_OFF = 145;      // finger: degrees at the middle joint
-const THUMB_ON = 0.70, THUMB_OFF = 0.735; // thumb: tip to palm centre, in palm lengths
+// curled below 70% of the relaxed hand, and open again at 77%; the gap stops it flickering
+const CURL_ON = 0.70, CURL_OFF = 0.77;
+const NOT_CALIBRATED = [1, 1, 1, 1, 1];
+const LOOKS_OPEN = 0.45;     // a finger below this during calibration isn't relaxed, it's curled
+const LOWEST_RELAXED = 0.3;  // keeps percentages sane if the thumb rests right against the palm
 
 function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: (a.z || 0) - (b.z || 0) }; }
 function len(v) { return Math.hypot(v.x, v.y, v.z); }
@@ -25,19 +26,31 @@ export function curlMetrics(hand) {
   return { angles, thumb };
 }
 
-// five booleans, thumb first
-export function curledFingers(hand, prev = [false, false, false, false, false]) {
-  const { angles, thumb } = curlMetrics(hand);
-  const fingers = angles.map((a, i) => a < (prev[i + 1] ? CURL_OFF : CURL_ON));
-  // a thumb resting across an open palm is not a closed hand, so it only counts alongside a finger
-  const thumbCurled = fingers.some(Boolean) && thumb < (prev[0] ? THUMB_OFF : THUMB_ON);
-  return [thumbCurled, ...fingers];
+// how open each finger is before calibration, thumb first; 0 is fully closed
+export function rawOpen({ angles, thumb }) {
+  return [Math.max(0, (thumb - 0.35) / 0.5), ...angles.map(a => Math.max(0, (a - 60) / 110))];
 }
 
-// 0 to 1 per finger, thumb first, for showing how open each one is
-export function openAmounts({ angles, thumb }) {
-  const clamp = v => Math.max(0, Math.min(1, v));
-  return [clamp((thumb - 0.35) / 0.5), ...angles.map(a => clamp((a - 60) / 110))];
+// how open each finger is, where 1 is the relaxed hand; a straighter finger goes above 1
+export function openAmounts(metrics, relaxed = NOT_CALIBRATED) {
+  return rawOpen(metrics).map((open, i) => open / relaxed[i]);
+}
+
+// five booleans, thumb first
+export function curledFingers(hand, prev = [false, false, false, false, false], relaxed = NOT_CALIBRATED) {
+  return openAmounts(curlMetrics(hand), relaxed).map((open, i) => open < (prev[i] ? CURL_OFF : CURL_ON));
+}
+
+export function looksRelaxed(raw) {
+  return raw.slice(1).every(open => open >= LOOKS_OPEN);
+}
+
+// the middle value of each finger across the calibration frames
+export function relaxedFrom(samples) {
+  return [0, 1, 2, 3, 4].map(i => {
+    const sorted = samples.map(s => s[i]).sort((a, b) => a - b);
+    return Math.max(LOWEST_RELAXED, sorted[Math.floor(sorted.length / 2)]);
+  });
 }
 
 // how much of a new tracking frame to use: steady hands are smoothed, moving hands follow at once

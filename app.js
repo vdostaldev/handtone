@@ -2,6 +2,7 @@ import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.mjs';
 import {
   curledFingers, curlMetrics, steady, yToPitch, snapNote, bendAmount,
   chordNotes, noteName, midiToHz, xToCutoff, coverMap, openAmounts, followAmount,
+  rawOpen, looksRelaxed, relaxedFrom,
 } from './logic.js';
 
 const BONES = [
@@ -16,6 +17,8 @@ const FINGER_NAMES = ['thumb', 'index', 'middle', 'ring', 'pinky'];
 const LINE = '#30d5c8';
 const CHANGE_MS = 60;      // a chord change has to hold this long
 const LOST_MS = 250;       // a hand can vanish this long without the sound stopping
+const CALIBRATE_MS = 2000; // how long to hold a relaxed hand up
+const CALIBRATE_GAP_MS = 1500; // losing the relaxed hand this long starts the hold over
 const MATCH_DISTANCE = 0.3;
 const MAX_VOICES = 6;
 
@@ -26,11 +29,16 @@ const loader = document.getElementById('loader');
 const tapLabel = document.getElementById('tap');
 const valuesTab = document.getElementById('values');
 const valuesBody = document.getElementById('valuesBody');
+const valuesData = document.getElementById('valuesData');
+const recalibrate = document.getElementById('recalibrate');
+const calibrateBox = document.getElementById('calibrate');
+const calibrateBar = document.getElementById('calibrateBar');
 const debug = location.hash === '#debug';
 
 let tracker = null, audio = null, stream = null, running = false;
 let lastVideoTime = -1, screenW = 0, screenH = 0, frames = 0;
 let engine = '', trackMs = 0, trackRate = 0, lastTrack = 0, lastValues = 0;
+let relaxed = undefined, calibration = null;
 const slots = [null, null];
 
 // ---- tracking ----
@@ -112,10 +120,11 @@ function updateSlot(slot, landmarks, world, now) {
   slot.centre = palmCentre(slot.hand);
   slot.lastSeen = now;
 
-  slot.curled = curledFingers(world, slot.curled);
   slot.metrics = curlMetrics(world);
-  const raw = slot.curled.filter(Boolean).length;
-  const count = steady(slot.count, raw, now, CHANGE_MS);
+  if (calibration) collectRelaxed(slot.metrics, now);
+  slot.curled = curledFingers(world, slot.curled, relaxed);
+  const raw = calibration ? 0 : slot.curled.filter(Boolean).length;
+  const count = steady(slot.count, raw, now, calibration ? 0 : CHANGE_MS);
 
   const map = coverMap(video.videoWidth, video.videoHeight, screenW, screenH);
   slot.screen = map(slot.centre);
@@ -134,6 +143,36 @@ function updateSlot(slot, landmarks, world, now) {
       xToCutoff(slot.screen.x / screenW),
     );
   }
+}
+
+// ---- calibration ----
+
+function startCalibration() {
+  calibration = { samples: [], start: 0, last: 0 };
+  relaxed = undefined;
+  calibrateBar.style.width = '0';
+  calibrateBox.classList.add('on');
+}
+
+function collectRelaxed(metrics, now) {
+  const raw = rawOpen(metrics);
+  if (!looksRelaxed(raw)) return;
+  if (now - calibration.last > CALIBRATE_GAP_MS) {
+    calibration.samples = [];
+    calibration.start = now;
+  }
+  calibration.last = now;
+  calibration.samples.push(raw);
+}
+
+function updateCalibration(now) {
+  const held = now - calibration.last > CALIBRATE_GAP_MS ? 0 : (calibration.last - calibration.start) / CALIBRATE_MS;
+  calibrateBar.style.width = `${Math.min(100, held * 100)}%`;
+  if (held < 1) return;
+  relaxed = relaxedFrom(calibration.samples);
+  calibration = null;
+  calibrateBox.classList.remove('on');
+  slots.forEach(slot => { if (slot) slot.curled = [false, false, false, false, false]; });
 }
 
 // ---- sound ----
@@ -230,7 +269,7 @@ function drawHand(slot, map) {
 
 function bar(label, amount, curled) {
   const pct = Math.round(amount * 100);
-  return `<div class="row"><span>${label}</span><i class="${curled ? 'shut' : ''}"><b style="width:${pct}%"></b></i><span>${pct}%</span></div>`;
+  return `<div class="row"><span>${label}</span><i class="${curled ? 'shut' : ''}"><b style="width:${Math.min(100, pct)}%"></b></i><span>${pct}%</span></div>`;
 }
 
 function line(label, value) {
@@ -244,10 +283,11 @@ function renderValues(now) {
   let html = line('tracking', `${Math.round(trackRate)}/s`)
     + line('each look', `${Math.round(trackMs)} ms`)
     + line('runs on', engine)
+    + line('relaxed', calibration ? 'measuring' : relaxed ? 'set' : 'not set')
     + line('camera', `${video.videoWidth}\u00d7${video.videoHeight} ${Math.round(cam.frameRate || 0)}/s`);
   slots.forEach((slot, s) => {
     if (!slot || !slot.metrics) return;
-    const open = openAmounts(slot.metrics);
+    const open = openAmounts(slot.metrics, relaxed);
     html += `<h2>hand ${s + 1}</h2>`
       + FINGER_NAMES.map((name, i) => bar(name, open[i], slot.curled[i])).join('')
       + line('curled', slot.count.value)
@@ -257,7 +297,7 @@ function renderValues(now) {
       + line('tone', `${Math.round(xToCutoff(slot.screen.x / screenW))} Hz`);
   });
   if (!slots.some(Boolean)) html += '<h2>no hands seen</h2>';
-  valuesBody.innerHTML = html;
+  valuesData.innerHTML = html;
 }
 
 function nextFrame() {
@@ -279,6 +319,7 @@ function frame() {
     if (lastTrack) trackRate += (1000 / Math.max(1, now - lastTrack) - trackRate) * 0.1;
     lastTrack = now;
     matchHands(result, now);
+    if (calibration) updateCalibration(now);
     frames++;
   }
   g.clearRect(0, 0, screenW, screenH);
@@ -334,6 +375,7 @@ loader.addEventListener('click', async () => {
     resize();
     loader.classList.add('off');
     valuesTab.classList.add('on');
+    startCalibration();
     running = true;
     nextFrame();
   } catch (err) {
@@ -344,6 +386,11 @@ loader.addEventListener('click', async () => {
 valuesTab.addEventListener('click', () => {
   valuesBody.hidden = !valuesBody.hidden;
   lastValues = 0;
+});
+
+recalibrate.addEventListener('click', event => {
+  event.stopPropagation();
+  startCalibration();
 });
 
 window.addEventListener('resize', resize);
@@ -370,6 +417,9 @@ if ('serviceWorker' in navigator && !debug) navigator.serviceWorker.register('sw
 if (debug) {
   window.__hands = {
     slots,
+    relaxed: () => relaxed,
+    calibrating: () => !!calibration,
+    skipCalibration() { calibration = null; calibrateBox.classList.remove('on'); },
     audioState: () => audio && audio.ctx.state,
     frames: () => frames,
     level() {

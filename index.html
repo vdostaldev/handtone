@@ -30,6 +30,12 @@
   #valuesBody { width:178px; margin-top:7px; }
   #valuesBody[hidden] { display:none; }
   #valuesBody h2 { margin:9px 0 4px; font:inherit; color:#30d5c8; }
+  #recalibrate { width:100%; min-height:36px; margin-top:9px; border:1px solid #30d5c8; border-radius:7px; background:none; color:#30d5c8; font:inherit; }
+  #calibrate { position:fixed; left:50%; bottom:calc(env(safe-area-inset-bottom) + 40px); transform:translateX(-50%); width:min(260px, calc(100% - 48px)); padding:12px 14px; box-sizing:border-box; border-radius:10px; background:rgba(0,0,0,.55); opacity:0; pointer-events:none; transition:opacity .4s ease; }
+  #calibrate.on { opacity:1; }
+  #calibrateText { text-align:center; font:300 13px/1.4 -apple-system,"Helvetica Neue",sans-serif; }
+  #calibrateTrack { height:2px; margin-top:10px; background:rgba(255,255,255,.2); }
+  #calibrateBar { width:0; height:100%; background:#30d5c8; }
   .row { display:flex; align-items:center; justify-content:space-between; gap:7px; }
   .row > span:first-child { min-width:46px; flex:none; white-space:nowrap; color:#bbb; }
   .row > span:last-child { flex:none; text-align:right; font-variant-numeric:tabular-nums; }
@@ -41,7 +47,8 @@
 <body>
 <video id="video" playsinline muted></video>
 <canvas id="overlay"></canvas>
-<div id="values"><div id="valuesLabel">values</div><div id="valuesBody" hidden></div></div>
+<div id="values"><div id="valuesLabel">values</div><div id="valuesBody" hidden><div id="valuesData"></div><button id="recalibrate" type="button">recalibrate</button></div></div>
+<div id="calibrate"><div id="calibrateText">hold your hand up, open and relaxed</div><div id="calibrateTrack"><div id="calibrateBar"></div></div></div>
 <div id="loader"><div id="dot"></div><div id="tap">tap</div></div>
 <script type="module" src="app.js"></script>
 </body>

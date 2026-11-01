@@ -23,10 +23,13 @@ function handWith(angles, thumbReach) {
 }
 const closed = c => c.filter(Boolean).length;
 
-test('an open hand counts as nothing curled, even when relaxed or with the thumb across the palm', () => {
+test('an open hand counts as nothing curled, even when relaxed', () => {
   assert.equal(closed(L.curledFingers(handWith([170, 170, 170, 170], 1))), 0);
   assert.equal(closed(L.curledFingers(handWith([140, 150, 140, 145], 1))), 0);
-  assert.equal(closed(L.curledFingers(handWith([170, 170, 170, 170], 0.2))), 0);
+});
+
+test('the thumb counts on its own', () => {
+  assert.deepEqual(L.curledFingers(handWith([170, 170, 170, 170], 0.2)), [true, false, false, false, false]);
 });
 
 test('curled fingers count, and the thumb joins them', () => {
@@ -51,9 +54,35 @@ test('a finger counts as curled below 70% open', () => {
 
 test('open amounts run from closed to open', () => {
   const [thumb, index] = L.openAmounts(L.curlMetrics(handWith([170, 170, 170, 170], 1)));
-  assert.equal(thumb, 1);
-  assert.equal(index, 1);
+  assert.ok(thumb >= 1);
+  assert.ok(Math.abs(index - 1) < 1e-9);
   assert.equal(L.openAmounts(L.curlMetrics(handWith([40, 170, 170, 170], 0.2)))[1], 0);
+});
+
+test('calibration makes the relaxed hand 100%, and straighter fingers go over', () => {
+  const relaxedHand = L.curlMetrics(handWith([120, 120, 120, 120], 0.8));
+  const relaxed = L.relaxedFrom([L.rawOpen(relaxedHand)]);
+  L.openAmounts(relaxedHand, relaxed).forEach(v => assert.ok(Math.abs(v - 1) < 1e-9));
+  const straight = L.openAmounts(L.curlMetrics(handWith([170, 170, 170, 170], 1)), relaxed);
+  assert.ok(straight[1] > 1.5);
+});
+
+test('the 70% line is measured from the relaxed hand', () => {
+  const relaxed = L.relaxedFrom([L.rawOpen(L.curlMetrics(handWith([120, 120, 120, 120], 0.8)))]);
+  const curled = a => L.curledFingers(handWith([a, 170, 170, 170], 1), undefined, relaxed)[1];
+  assert.equal(curled(120), false); // would count as curled without calibration
+  assert.equal(curled(104), false); // 73%
+  assert.equal(curled(100), true);  // 67%
+});
+
+test('the relaxed value is the middle sample and never too small', () => {
+  const r = L.relaxedFrom([[0, 0.8, 0.8, 0.8, 0.8], [0, 0.9, 0.9, 0.9, 0.9], [0, 5, 5, 5, 5]]);
+  assert.deepEqual(r, [0.3, 0.9, 0.9, 0.9, 0.9]);
+});
+
+test('calibration rejects a hand with a curled finger, the thumb does not matter', () => {
+  assert.equal(L.looksRelaxed([0, 0.8, 0.8, 0.8, 0.8]), true);
+  assert.equal(L.looksRelaxed([1, 0.8, 0.8, 0.2, 0.8]), false);
 });
 
 test('a moving hand follows at once and a still hand is smoothed', () => {
