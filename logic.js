@@ -6,8 +6,9 @@ const SCALE = [0, 2, 4, 7, 9]; // pentatonic, so any two notes sound fine togeth
 const LOW = 45, HIGH = 76;     // A2 to E5
 
 // curled keeps a finger's previous state in the gap between the thresholds, so it doesn't flicker
-const CURL_ON = 105, CURL_OFF = 125;      // finger: degrees at the middle joint
-const THUMB_ON = 0.55, THUMB_OFF = 0.68;  // thumb: tip to palm centre, in palm lengths
+// curled below 70% open on the values tab, and open again at 77%
+const CURL_ON = 137, CURL_OFF = 145;      // finger: degrees at the middle joint
+const THUMB_ON = 0.70, THUMB_OFF = 0.735; // thumb: tip to palm centre, in palm lengths
 
 function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: (a.z || 0) - (b.z || 0) }; }
 function len(v) { return Math.hypot(v.x, v.y, v.z); }

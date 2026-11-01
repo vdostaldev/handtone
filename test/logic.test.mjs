@@ -25,7 +25,7 @@ const closed = c => c.filter(Boolean).length;
 
 test('an open hand counts as nothing curled, even when relaxed or with the thumb across the palm', () => {
   assert.equal(closed(L.curledFingers(handWith([170, 170, 170, 170], 1))), 0);
-  assert.equal(closed(L.curledFingers(handWith([130, 135, 120, 115], 1))), 0);
+  assert.equal(closed(L.curledFingers(handWith([140, 150, 140, 145], 1))), 0);
   assert.equal(closed(L.curledFingers(handWith([170, 170, 170, 170], 0.2))), 0);
 });
 
@@ -37,8 +37,16 @@ test('curled fingers count, and the thumb joins them', () => {
 
 test('a curled finger has to open clearly before it lets go', () => {
   const was = [false, true, false, false, false];
-  assert.equal(L.curledFingers(handWith([115, 170, 170, 170], 1), was)[1], true);
-  assert.equal(L.curledFingers(handWith([130, 170, 170, 170], 1), was)[1], false);
+  assert.equal(L.curledFingers(handWith([140, 170, 170, 170], 1), was)[1], true);
+  assert.equal(L.curledFingers(handWith([150, 170, 170, 170], 1), was)[1], false);
+});
+
+test('a finger counts as curled below 70% open', () => {
+  const open = a => L.openAmounts(L.curlMetrics(handWith([a, 170, 170, 170], 1)))[1];
+  assert.ok(open(136) < 0.7);
+  assert.equal(L.curledFingers(handWith([136, 170, 170, 170], 1))[1], true);
+  assert.ok(open(138) > 0.7);
+  assert.equal(L.curledFingers(handWith([138, 170, 170, 170], 1))[1], false);
 });
 
 test('open amounts run from closed to open', () => {
