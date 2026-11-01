@@ -1,0 +1,316 @@
+import { FilesetResolver, HandLandmarker } from './vendor/vision_bundle.mjs';
+import {
+  curledFingers, curlMetrics, steady, yToPitch, snapNote, bendAmount,
+  chordNotes, noteName, midiToHz, xToCutoff, coverMap,
+} from './logic.js';
+
+const BONES = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
+];
+const PALM = [0, 5, 9, 13, 17];
+const LINE = '#14e0bc', JOINT = '#ff4fd8';
+const SMOOTH = 0.6;        // how much of each new tracking frame is used
+const CHANGE_MS = 90;      // a chord change has to hold this long
+const LOST_MS = 250;       // a hand can vanish this long without the sound stopping
+const MATCH_DISTANCE = 0.3;
+const MAX_VOICES = 6;
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const g = canvas.getContext('2d');
+const startScreen = document.getElementById('start');
+const startButton = document.getElementById('go');
+const message = document.getElementById('message');
+const hint = document.getElementById('hint');
+const debug = location.hash === '#debug';
+
+let tracker = null, audio = null, stream = null, running = false;
+let lastVideoTime = -1, heardSound = false, screenW = 0, screenH = 0, frames = 0;
+const slots = [null, null];
+
+// ---- tracking ----
+
+async function makeTracker() {
+  const files = await FilesetResolver.forVisionTasks(new URL('vendor/wasm', location.href).href);
+  const options = delegate => ({
+    baseOptions: { modelAssetPath: new URL('vendor/hand_landmarker.task', location.href).href, delegate },
+    runningMode: 'VIDEO',
+    numHands: 2,
+  });
+  try {
+    return await HandLandmarker.createFromOptions(files, options('GPU'));
+  } catch (err) {
+    console.warn('GPU tracking failed, using CPU', err);
+    return HandLandmarker.createFromOptions(files, options('CPU'));
+  }
+}
+
+function palmCentre(hand) {
+  let x = 0, y = 0;
+  PALM.forEach(i => { x += hand[i].x; y += hand[i].y; });
+  return { x: x / PALM.length, y: y / PALM.length };
+}
+
+function newSlot(index) {
+  return {
+    index, hand: null, centre: null, lastSeen: 0, lastTime: 0,
+    curled: [false, false, false, false, false],
+    count: { value: 0, pending: 0, since: 0 },
+    pitch: null, note: null, bend: 0, screen: null,
+  };
+}
+
+// keeps each hand on its own voice from frame to frame
+function matchHands(result, now) {
+  const free = new Set(result.landmarks.keys());
+  const pairs = [];
+  slots.forEach((slot, s) => {
+    if (!slot) return;
+    free.forEach(i => {
+      const c = palmCentre(result.landmarks[i]);
+      const d = Math.hypot(c.x - slot.centre.x, c.y - slot.centre.y);
+      if (d < MATCH_DISTANCE) pairs.push({ s, i, d });
+    });
+  });
+  pairs.sort((a, b) => a.d - b.d);
+  const taken = new Set();
+  const seen = [];
+  pairs.forEach(({ s, i }) => {
+    if (taken.has(s) || !free.has(i)) return;
+    taken.add(s); free.delete(i);
+    seen.push([slots[s], i]);
+  });
+  free.forEach(i => {
+    const s = slots.findIndex(x => !x);
+    if (s < 0) return;
+    slots[s] = newSlot(s);
+    seen.push([slots[s], i]);
+  });
+  seen.forEach(([slot, i]) => updateSlot(slot, result.landmarks[i], result.worldLandmarks[i], now));
+  slots.forEach((slot, s) => {
+    if (slot && now - slot.lastSeen > LOST_MS) {
+      if (audio) audio.voices[s].silence();
+      slots[s] = null;
+    }
+  });
+}
+
+function updateSlot(slot, landmarks, world, now) {
+  slot.hand = landmarks.map((p, i) => slot.hand
+    ? { x: slot.hand[i].x + (p.x - slot.hand[i].x) * SMOOTH, y: slot.hand[i].y + (p.y - slot.hand[i].y) * SMOOTH }
+    : { x: p.x, y: p.y });
+  slot.centre = palmCentre(slot.hand);
+  slot.lastSeen = now;
+
+  slot.curled = curledFingers(world, slot.curled);
+  slot.metrics = curlMetrics(world);
+  const raw = slot.curled.filter(Boolean).length;
+  const count = steady(slot.count, raw, now, CHANGE_MS);
+
+  const map = coverMap(video.videoWidth, video.videoHeight, screenW, screenH);
+  slot.screen = map(slot.centre);
+  const pitch = yToPitch(slot.screen.y / screenH);
+  const dt = Math.max(1, now - (slot.lastTime || now - 33)) / 1000;
+  const speed = slot.pitch == null ? 0 : (pitch - slot.pitch) / dt;
+  slot.pitch = pitch;
+  slot.lastTime = now;
+  slot.note = snapNote(pitch, slot.note);
+  slot.bend += (bendAmount(speed) - slot.bend) * 0.3;
+
+  if (audio) {
+    audio.voices[slot.index].play(
+      chordNotes(slot.note, count),
+      (pitch - slot.note) * slot.bend,
+      xToCutoff(slot.screen.x / screenW),
+    );
+  }
+  if (count > 0 && !heardSound) { heardSound = true; hint.classList.add('off'); }
+}
+
+// ---- sound ----
+
+class Voice {
+  constructor(ctx, out, vibrato) {
+    this.ctx = ctx;
+    this.filter = ctx.createBiquadFilter();
+    this.filter.type = 'lowpass';
+    this.filter.Q.value = 1;
+    this.filter.connect(out);
+    this.oscs = [];
+    for (let i = 0; i < MAX_VOICES; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      gain.gain.value = 0;
+      vibrato.connect(osc.detune);
+      osc.connect(gain).connect(this.filter);
+      osc.start();
+      this.oscs.push({ osc, gain, level: 0 });
+    }
+  }
+
+  play(notes, bend, cutoff) {
+    const t = this.ctx.currentTime;
+    this.filter.frequency.setTargetAtTime(cutoff, t, 0.05);
+    const level = notes.length ? 0.32 / Math.sqrt(notes.length) : 0;
+    this.oscs.forEach((v, i) => {
+      if (i < notes.length) {
+        const hz = midiToHz(notes[i] + bend);
+        if (v.level === 0) v.osc.frequency.setValueAtTime(hz, t); // a silent note starts in tune
+        else if (Math.abs(v.osc.frequency.value - hz) > 0.2) v.osc.frequency.setTargetAtTime(hz, t, 0.03);
+      }
+      // only touch the gain while it is away from where it should be
+      const want = i < notes.length ? level : 0;
+      if (Math.abs(v.gain.gain.value - want) > 0.002) v.gain.gain.setTargetAtTime(want, t, 0.05);
+      v.level = want;
+    });
+  }
+
+  silence() { this.play([], 0, 1000); }
+}
+
+function makeAudio() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ctx.resume();
+  const lfo = ctx.createOscillator();
+  const vibrato = ctx.createGain();
+  lfo.frequency.value = 5;
+  vibrato.gain.value = 5; // cents
+  lfo.connect(vibrato);
+  lfo.start();
+  const comp = ctx.createDynamicsCompressor();
+  comp.connect(ctx.destination);
+  const analyser = ctx.createAnalyser();
+  comp.connect(analyser);
+  return { ctx, analyser, voices: [new Voice(ctx, comp, vibrato), new Voice(ctx, comp, vibrato)] };
+}
+
+// ---- drawing ----
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  screenW = window.innerWidth;
+  screenH = window.innerHeight;
+  canvas.width = screenW * dpr;
+  canvas.height = screenH * dpr;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawHand(slot, map) {
+  const pts = slot.hand.map(map);
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  g.strokeStyle = LINE;
+  g.lineWidth = 3;
+  g.beginPath();
+  BONES.forEach(([a, b]) => { g.moveTo(pts[a].x, pts[a].y); g.lineTo(pts[b].x, pts[b].y); });
+  g.stroke();
+  g.fillStyle = JOINT;
+  pts.forEach(p => { g.beginPath(); g.arc(p.x, p.y, 4, 0, Math.PI * 2); g.fill(); });
+
+  if (slot.count.value > 0) {
+    const top = Math.min(...pts.map(p => p.y));
+    g.font = '700 34px -apple-system, "Helvetica Neue", sans-serif';
+    g.textAlign = 'center';
+    g.fillStyle = '#fff';
+    g.fillText(noteName(slot.note), slot.screen.x, Math.max(44, top - 18));
+  }
+}
+
+function frame() {
+  if (!running) return;
+  requestAnimationFrame(frame);
+  if (video.readyState < 2 || !video.videoWidth) return;
+  const now = performance.now();
+  if (video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    matchHands(tracker.detectForVideo(video, now), now);
+    frames++;
+  }
+  g.clearRect(0, 0, screenW, screenH);
+  const map = coverMap(video.videoWidth, video.videoHeight, screenW, screenH);
+  slots.forEach(slot => { if (slot) drawHand(slot, map); });
+}
+
+// ---- starting up ----
+
+async function openCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+  });
+  video.srcObject = stream;
+  await video.play();
+}
+
+function showError(err) {
+  console.error(err);
+  startButton.disabled = false;
+  startButton.textContent = 'Try again';
+  message.textContent = err && err.name === 'NotAllowedError'
+    ? 'The camera is blocked. Allow it in Settings, Safari, Camera, then try again.'
+    : 'Could not start: ' + (err && err.message || err);
+}
+
+const trackerReady = makeTracker();
+trackerReady.catch(() => {}); // reported when Start is tapped
+
+startButton.addEventListener('click', async () => {
+  startButton.disabled = true;
+  startButton.textContent = 'Starting';
+  message.textContent = '';
+  try {
+    // inside the tap, or the iPhone keeps the sound off; playback also ignores the silent switch where it can
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    if (!audio) audio = makeAudio();
+    await openCamera();
+    tracker = await trackerReady;
+    resize();
+    startScreen.classList.add('off');
+    hint.classList.remove('off');
+    running = true;
+    requestAnimationFrame(frame);
+  } catch (err) {
+    showError(err);
+  }
+});
+
+window.addEventListener('resize', resize);
+
+// the iPhone stops the camera and sound when the app is left
+document.addEventListener('visibilitychange', async () => {
+  if (!running) return;
+  if (document.hidden) {
+    audio.voices.forEach(v => v.silence());
+    slots.fill(null);
+    return;
+  }
+  audio.ctx.resume();
+  try {
+    if (!stream.getVideoTracks().some(t => t.readyState === 'live')) await openCamera();
+    else await video.play();
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+if ('serviceWorker' in navigator && !debug) navigator.serviceWorker.register('sw.js');
+
+if (debug) {
+  window.__hands = {
+    slots,
+    audioState: () => audio && audio.ctx.state,
+    frames: () => frames,
+    level() {
+      const data = new Float32Array(2048);
+      audio.analyser.getFloatTimeDomainData(data);
+      return Math.max(...data.map(Math.abs));
+    },
+    voiceHz: i => audio.voices[i].oscs.map(v => (v.level > 0 ? Math.round(v.osc.frequency.value) : 0)),
+    frequencyNow: i => audio.voices[i].filter.frequency.value,
+  };
+}
